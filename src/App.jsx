@@ -1,4 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import products from '../public/products.json';
+
+console.log(products);
 
 const ElectroMaxApp = () => {
   const [products, setProducts] = useState([]);
@@ -14,31 +17,35 @@ const ElectroMaxApp = () => {
 
   // Загрузка products.json из корня проекта
   useEffect(() => {
-    const loadProducts = async () => {
-      try {
-        setLoading(true);
-        const response = await fetch('/products.json');
-        if (!response.ok) throw new Error('Файл не найден');
-        
-        const data = await response.json();
-        const productsData = data.products || data;
-        
-        setProducts(productsData);
-        setLoading(false);
-      } catch (error) {
-        console.error('Ошибка загрузки products.json:', error);
-        alert('Не удалось загрузить products.json. Убедитесь что файл находится в папке public/');
-        setLoading(false);
-      }
-    };
+  const loadProducts = async () => {
+    try {
+      setLoading(true);
 
-    loadProducts();
+      // Просто fetch с корня public
+      const response = await fetch('/products.json');
 
-    const savedOrders = localStorage.getItem('electromax_orders');
-    if (savedOrders) {
-      setOrders(JSON.parse(savedOrders));
+      if (!response.ok) throw new Error('Файл не найден');
+      
+      const data = await response.json();
+      const productsData = data.products || data;
+      
+      setProducts(productsData);
+      setLoading(false);
+    } catch (error) {
+      console.error('Ошибка загрузки products.json:', error);
+      alert('Не удалось загрузить products.json. Убедитесь что файл находится в папке public/');
+      setLoading(false);
     }
-  }, []);
+  };
+
+  loadProducts();
+
+  const savedOrders = localStorage.getItem('electromax_orders');
+  if (savedOrders) {
+    setOrders(JSON.parse(savedOrders));
+  }
+}, []);
+
 
   // Сохранение заказов
   useEffect(() => {
