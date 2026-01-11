@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   TrendingUp, Package, DollarSign, Calendar, Search, ShoppingCart, Printer,
   BarChart3, Users, FileText, Calculator, Clock, AlertCircle,
@@ -7,15 +7,17 @@ import {
 } from 'lucide-react';
 
 /**
- * ElectroMaxPro — обновлённая версия v3.1
- * Основные улучшения:
- * - Сверхкомпактный каталог с микро-картами товаров
- * - Красивый модальный диалог для удаления/отмены
- * - Исправлен sidebar с правильным отображением иконок
- * - Устранены косметические баги при изменениях
+ * ElectroMaxPro — исправленная версия
+ * Исправления:
+ * - безопасный парсинг localStorage (нормализация orders/debts)
+ * - приведение total/price/quantity к Number
+ * - защита всех .map/.toFixed и других мест от undefined/null
+ * - мемоизация аналитики для стабильности
+ * - исправлён путь к логотипу (/logo.jpg)
  */
 
 const ElectroMaxPro = () => {
+  // STATES
   const [products, setProducts] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [cart, setCart] = useState([]);
@@ -39,6 +41,127 @@ const ElectroMaxPro = () => {
   const [confirmDialog, setConfirmDialog] = useState({ show: false, title: '', message: '', onConfirm: null, isDangerous: false });
   const itemsPerPage = 50;
 
+  // Utility: safe JSON parse
+  const safeParse = (str) => {
+    try { return JSON.parse(str); } catch (e) { return null; }
+  };
+
+  // Demo products fallback
+  const generateDemoProducts = () => {
+    const categories = ['Электроника', 'Бытовая техника', 'Компьютеры', 'Аксессуары', 'Телефоны'];
+    const productsList = [];
+    for (let i = 1; i <= 120; i++) {
+      productsList.push({
+        id: i,
+        name: `${categories[i % 5]} Товар ${i}`,
+        price: parseFloat((Math.random() * 1000 + 50).toFixed(2)),
+        unit: 'шт',
+        category: categories[i % 5],
+        stock: Math.floor(Math.random() * 100)
+      });
+    }
+    return productsList;
+  };
+
+  // Fetch exchange rate (stub)
+  const fetchExchangeRate = async () => {
+    try {
+      const uzbRate = 12650;
+      setExchangeRate(uzbRate);
+    } catch (error) {
+      console.log('Используется стандартный курс');
+    }
+  };
+
+  // SAFE getFilteredOrders (returns array)
+  const getFilteredOrders = () => {
+    try {
+      const all = Array.isArray(orders) ? orders : [];
+      if (!dateFilter.start && !dateFilter.end) return all;
+
+      return all.filter(order => {
+        const orderDate = new Date(order?.date);
+        const start = dateFilter.start ? new Date(dateFilter.start) : null;
+        const end = dateFilter.end ? new Date(dateFilter.end) : null;
+        if (start && orderDate < start) return false;
+        if (end && orderDate > end) return false;
+        return true;
+      });
+    } catch (e) {
+      console.error('getFilteredOrders error', e);
+      return [];
+    }
+  };
+
+  // Analytics computation (safe)
+  const computeAnalytics = () => {
+    try {
+      const filtered = Array.isArray(getFilteredOrders()) ? getFilteredOrders() : [];
+      const totalRevenue = filtered.reduce((sum, o) => sum + (Number(o?.total) || 0), 0);
+      const totalOrders = filtered.length;
+      const avgOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
+
+      const today = new Date();
+      const todayOrders = filtered.filter(o => {
+        const od = new Date(o?.date);
+        return od && od.toDateString && od.toDateString() === today.toDateString();
+      });
+      const todayRevenue = todayOrders.reduce((s, o) => s + (Number(o?.total) || 0), 0);
+
+      const productSales = {};
+      filtered.forEach(order => {
+        const items = Array.isArray(order.items) ? order.items : [];
+        items.forEach(item => {
+          const name = item?.name ?? 'Неизвестно';
+          const qty = Number(item?.quantity) || 0;
+          const price = Number(item?.price) || 0;
+          if (!productSales[name]) productSales[name] = { quantity: 0, revenue: 0 };
+          productSales[name].quantity += qty;
+          productSales[name].revenue += price * qty;
+        });
+      });
+
+      const topProducts = Object.entries(productSales)
+        .sort((a, b) => b[1].revenue - a[1].revenue)
+        .slice(0, 10);
+
+      const categoryRevenue = {};
+      filtered.forEach(order => {
+        const items = Array.isArray(order.items) ? order.items : [];
+        items.forEach(item => {
+          const prod = products.find(p => p.name === item?.name);
+          const cat = prod?.category || 'Прочее';
+          categoryRevenue[cat] = (categoryRevenue[cat] || 0) + ((Number(item?.price) || 0) * (Number(item?.quantity) || 0));
+        });
+      });
+
+      return {
+        totalRevenue,
+        totalOrders,
+        avgOrderValue,
+        todayRevenue,
+        todayOrders: todayOrders.length,
+        topProducts,
+        categoryRevenue
+      };
+    } catch (e) {
+      console.error('computeAnalytics error', e);
+      return {
+        totalRevenue: 0,
+        totalOrders: 0,
+        avgOrderValue: 0,
+        todayRevenue: 0,
+        todayOrders: 0,
+        topProducts: [],
+        categoryRevenue: {}
+      };
+    }
+  };
+
+  // Memoize analytics
+  const analytics = useMemo(() => computeAnalytics(), [orders, products, dateFilter]);
+
+  // LOAD initial data: products + normalize saved orders/debts
   useEffect(() => {
     const loadProducts = async () => {
       try {
@@ -59,13 +182,36 @@ const ElectroMaxPro = () => {
 
     loadProducts();
 
-    const savedOrders = localStorage.getItem('electromax_orders');
-    if (savedOrders) {
-      setOrders(JSON.parse(savedOrders));
+    // safe parse + normalize orders
+    const savedOrdersRaw = safeParse(localStorage.getItem('electromax_orders'));
+    if (Array.isArray(savedOrdersRaw)) {
+      const normalized = savedOrdersRaw.map(o => {
+        const items = Array.isArray(o.items) ? o.items.map(it => ({
+          ...it,
+          quantity: Number(it?.quantity) || 0,
+          price: Number(it?.price) || 0
+        })) : [];
+
+        return {
+          ...o,
+          items,
+          total: Number(o?.total) || items.reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.quantity) || 0), 0),
+          date: o?.date || new Date().toISOString(),
+          dateFormatted: o?.dateFormatted || new Date(o?.date || Date.now()).toLocaleString('ru-RU')
+        };
+      });
+      setOrders(normalized);
     }
-    const savedDebts = localStorage.getItem('electromax_debts');
-    if (savedDebts) {
-      setDebts(JSON.parse(savedDebts));
+
+    // safe parse debts
+    const savedDebtsRaw = safeParse(localStorage.getItem('electromax_debts'));
+    if (Array.isArray(savedDebtsRaw)) {
+      const normalizedDebts = savedDebtsRaw.map(d => ({
+        ...d,
+        amount: Number(d?.amount) || 0,
+        createdAt: d?.createdAt || new Date().toISOString()
+      }));
+      setDebts(normalizedDebts);
     }
 
     fetchExchangeRate();
@@ -73,9 +219,13 @@ const ElectroMaxPro = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // Persist orders/debts
   useEffect(() => {
     if (orders.length > 0) {
       localStorage.setItem('electromax_orders', JSON.stringify(orders));
+    } else {
+      // don't remove intentionally — keep as is; optional: remove if zero
+      // localStorage.removeItem('electromax_orders');
     }
   }, [orders]);
 
@@ -83,43 +233,19 @@ const ElectroMaxPro = () => {
     localStorage.setItem('electromax_debts', JSON.stringify(debts));
   }, [debts]);
 
-  const generateDemoProducts = () => {
-    const categories = ['Электроника', 'Бытовая техника', 'Компьютеры', 'Аксессуары', 'Телефоны'];
-    const productsList = [];
-    for (let i = 1; i <= 120; i++) {
-      productsList.push({
-        id: i,
-        name: `${categories[i % 5]} Товар ${i}`,
-        price: parseFloat((Math.random() * 1000 + 50).toFixed(2)),
-        unit: 'шт',
-        category: categories[i % 5],
-        stock: Math.floor(Math.random() * 100)
-      });
-    }
-    return productsList;
-  };
-
-  const fetchExchangeRate = async () => {
-    try {
-      const uzbRate = 12650;
-      setExchangeRate(uzbRate);
-    } catch (error) {
-      console.log('Используется стандартный курс');
-    }
-  };
-
+  // PRODUCTS filtering & pagination
   const getCategories = () => {
-    return ['all', ...new Set(products.map(p => p.category))];
+    return ['all', ...new Set((Array.isArray(products) ? products : []).map(p => p.category))];
   };
 
-  const filteredProducts = products.filter(p => {
+  const filteredProducts = (Array.isArray(products) ? products : []).filter(p => {
     const term = searchTerm.toLowerCase().trim();
     const matchesSearch = (
-      p.name.toLowerCase().includes(term) ||
-      p.id.toString().includes(term) ||
-      (p.category && p.category.toLowerCase().includes(term))
+      (p?.name ?? '').toString().toLowerCase().includes(term) ||
+      (p?.id ?? '').toString().includes(term) ||
+      ((p?.category ?? '').toString().toLowerCase().includes(term))
     );
-    const matchesCategory = filterCategory === 'all' || p.category === filterCategory;
+    const matchesCategory = filterCategory === 'all' || p?.category === filterCategory;
     return matchesSearch && matchesCategory;
   });
 
@@ -131,6 +257,7 @@ const ElectroMaxPro = () => {
     setCurrentPage(1);
   }, [searchTerm, filterCategory]);
 
+  // CART operations
   const addToCart = (product) => {
     const existingItem = cart.find(item => item.id === product.id);
     if (existingItem) {
@@ -159,11 +286,12 @@ const ElectroMaxPro = () => {
   };
 
   const calculateTotal = () => {
-    return cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    return (cart || []).reduce((sum, item) => sum + ((Number(item.price) || 0) * (Number(item.quantity) || 0)), 0);
   };
 
+  // ORDER handling
   const completeOrder = (asDebt = false, debtRef = null) => {
-    if (cart.length === 0) {
+    if (!Array.isArray(cart) || cart.length === 0) {
       setConfirmDialog({
         show: true,
         title: '⚠️ Корзина пуста',
@@ -180,8 +308,12 @@ const ElectroMaxPro = () => {
       id: Date.now(),
       date: new Date().toISOString(),
       dateFormatted: new Date().toLocaleString('ru-RU'),
-      items: [...cart],
-      total: calculateTotal(),
+      items: cart.map(it => ({
+        ...it,
+        price: Number(it.price) || 0,
+        quantity: Number(it.quantity) || 0
+      })),
+      total: Number(calculateTotal()) || 0,
       customer: { ...customerInfo },
       paymentStatus,
       debtRef
@@ -204,55 +336,73 @@ const ElectroMaxPro = () => {
     });
   };
 
+  // PRINT receipt (safe)
   const printReceipt = (order) => {
-    const printWindow = window.open('', '_blank');
-    const receiptHTML = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Чек #${order.id}</title>
-        <style>
-          body { font-family: Arial, sans-serif; max-width: 320px; margin: 20px auto; color:#111; }
-          .header { text-align: center; border-bottom: 1px dashed #111; padding-bottom: 8px; margin-bottom: 8px; }
-          .item { display: flex; justify-content: space-between; margin: 4px 0; }
-          .total { border-top: 1px dashed #111; margin-top: 8px; padding-top: 8px; font-weight: bold; }
-          @media print { body { margin: 0; } }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <h2>ELECTROMAX</h2>
-          <p>Чек #${order.id}</p>
-          <p>${order.dateFormatted}</p>
-          ${order.customer?.name ? `<p>Клиент: ${order.customer.name}</p>` : ''}
-        </div>
-        ${order.items.map(item => `
+    try {
+      const printWindow = window.open('', '_blank');
+      const itemsHtml = (Array.isArray(order.items) ? order.items : []).map(item => {
+        const qty = Number(item?.quantity) || 0;
+        const price = Number(item?.price) || 0;
+        return `
           <div class="item">
-            <span>${item.name} x${item.quantity}</span>
-            <span>$${(item.price * item.quantity).toFixed(2)}</span>
+            <span>${(item?.name) ?? 'Неизвестно'} x${qty}</span>
+            <span>$${(price * qty).toFixed(2)}</span>
           </div>
-        `).join('')}
-        <div class="total">
-          <div class="item">
-            <span>ИТОГО:</span>
-            <span>$${order.total.toFixed(2)}</span>
+        `;
+      }).join('');
+
+      const receiptHTML = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Чек #${order.id}</title>
+          <style>
+            body { font-family: Arial, sans-serif; max-width: 320px; margin: 20px auto; color:#111; }
+            .header { text-align: center; border-bottom: 1px dashed #111; padding-bottom: 8px; margin-bottom: 8px; }
+            .item { display: flex; justify-content: space-between; margin: 4px 0; }
+            .total { border-top: 1px dashed #111; margin-top: 8px; padding-top: 8px; font-weight: bold; }
+            @media print { body { margin: 0; } }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h2>ELECTROMAX</h2>
+            <p>Чек #${order.id}</p>
+            <p>${order.dateFormatted}</p>
+            ${order.customer?.name ? `<p>Клие��т: ${order.customer.name}</p>` : ''}
           </div>
-          <div class="item">
-            <span>В сумах:</span>
-            <span>${(order.total * exchangeRate).toFixed(0)} UZS</span>
+          ${itemsHtml}
+          <div class="total">
+            <div class="item">
+              <span>ИТОГО:</span>
+              <span>$${(Number(order?.total) || 0).toFixed(2)}</span>
+            </div>
+            <div class="item">
+              <span>В сумах:</span>
+              <span>${((Number(order?.total) || 0) * exchangeRate).toFixed(0)} UZS</span>
+            </div>
           </div>
-        </div>
-        <p style="text-align: center; margin-top: 12px;">Спасибо за покупку!</p>
-      </body>
-      </html>
-    `;
-    printWindow.document.write(receiptHTML);
-    printWindow.document.close();
-    printWindow.focus();
-    setTimeout(() => {
-      printWindow.print();
-      printWindow.close();
-    }, 250);
+          <p style="text-align: center; margin-top: 12px;">Спасибо за покупку!</p>
+        </body>
+        </html>
+      `;
+      printWindow.document.write(receiptHTML);
+      printWindow.document.close();
+      printWindow.focus();
+      setTimeout(() => {
+        printWindow.print();
+        printWindow.close();
+      }, 250);
+    } catch (e) {
+      console.error('printReceipt error', e);
+      setConfirmDialog({
+        show: true,
+        title: '❌ Ошибка',
+        message: 'Не удалось открыть печать',
+        onConfirm: null,
+        isDangerous: false
+      });
+    }
   };
 
   const deleteOrder = (orderId) => {
@@ -267,73 +417,7 @@ const ElectroMaxPro = () => {
     });
   };
 
-  const getFilteredOrders = () => {
-    if (!dateFilter.start && !dateFilter.end) return orders;
-
-    return orders.filter(order => {
-      const orderDate = new Date(order.date);
-      const start = dateFilter.start ? new Date(dateFilter.start) : null;
-      const end = dateFilter.end ? new Date(dateFilter.end) : null;
-
-      if (start && orderDate < start) return false;
-      if (end && orderDate > end) return false;
-      return true;
-    });
-  };
-
-  const getAnalytics = () => {
-    const filteredOrders = getFilteredOrders();
-    const totalRevenue = filteredOrders.reduce((sum, o) => sum + o.total, 0);
-    const totalOrders = filteredOrders.length;
-    const avgOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
-
-    const today = new Date();
-    const todayOrders = filteredOrders.filter(o => {
-      const orderDate = new Date(o.date);
-      return orderDate.toDateString() === today.toDateString();
-    });
-    const todayRevenue = todayOrders.reduce((sum, o) => sum + o.total, 0);
-
-    const productSales = {};
-    filteredOrders.forEach(order => {
-      order.items.forEach(item => {
-        if (!productSales[item.name]) {
-          productSales[item.name] = { quantity: 0, revenue: 0 };
-        }
-        productSales[item.name].quantity += item.quantity;
-        productSales[item.name].revenue += item.price * item.quantity;
-      });
-    });
-
-    const topProducts = Object.entries(productSales)
-      .sort((a, b) => b[1].revenue - a[1].revenue)
-      .slice(0, 10);
-
-    const categoryRevenue = {};
-    filteredOrders.forEach(order => {
-      order.items.forEach(item => {
-        const prod = products.find(p => p.name === item.name);
-        const cat = prod?.category || 'Прочее';
-        if (!categoryRevenue[cat]) {
-          categoryRevenue[cat] = 0;
-        }
-        categoryRevenue[cat] += item.price * item.quantity;
-      });
-    });
-
-    return {
-      totalRevenue,
-      totalOrders,
-      avgOrderValue,
-      todayRevenue,
-      todayOrders: todayOrders.length,
-      topProducts,
-      categoryRevenue
-    };
-  };
-
-  const analytics = getAnalytics();
-
+  // DEBTS
   const openDebtModal = () => {
     setDebtForm({
       customerName: customerInfo.name || '',
@@ -421,6 +505,7 @@ const ElectroMaxPro = () => {
     URL.revokeObjectURL(url);
   };
 
+  // UI: loading state
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center">
@@ -432,6 +517,7 @@ const ElectroMaxPro = () => {
     );
   }
 
+  // NAV
   const navItems = [
     { id: 'order', label: 'Касса', icon: ShoppingCart, badge: cart.length },
     { id: 'products', label: 'Товары', icon: Package },
@@ -440,6 +526,7 @@ const ElectroMaxPro = () => {
     { id: 'debts', label: 'Долги', icon: DollarSign, badge: debts.filter(d => !d.paid).length },
   ];
 
+  // Render
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100 flex">
       {/* SIDEBAR */}
@@ -521,7 +608,7 @@ const ElectroMaxPro = () => {
                 </button>
               )}
               <h2 className="text-sm font-bold text-white">ELECTROMAX</h2>
-              <img className='ml-[350px] w-[120px] rounded-[5px]' src="../public/logo.jpg" alt="" />
+              <img className='ml-[350px] w-[120px] rounded-[5px]' src="/logo.jpg" alt="logo" />
             </div>
 
             <div className="flex items-center gap-2 bg-gray-800 px-3 py-2 rounded text-xs text-gray-300">
@@ -536,7 +623,7 @@ const ElectroMaxPro = () => {
           {/* ORDER VIEW */}
           {currentView === 'order' && (
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 h-full">
-              {/* Products Catalog - СВЕРХКОМПАКТНЫЙ */}
+              {/* Products Catalog */}
               <div className="lg:col-span-3 flex flex-col h-full min-h-0">
                 <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden flex flex-col h-full">
                   <div className="px-3 py-2.5 border-b border-gray-700 flex items-center justify-between bg-gray-850">
@@ -546,7 +633,7 @@ const ElectroMaxPro = () => {
                     <span className="text-xs text-gray-400">{filteredProducts.length} товаров</span>
                   </div>
 
-                  {/* Поиск и фильтры */}
+                  {/* Поиск */}
                   <div className="p-2 border-b border-gray-700 bg-gray-900/50 space-y-2">
                     <div className="flex gap-2">
                       <div className="flex-1 relative">
@@ -568,12 +655,9 @@ const ElectroMaxPro = () => {
                         )}
                       </div>
                     </div>
-
-                    {/* Category filter - horizontal scroll */}
-                    
                   </div>
 
-                  {/* Product Grid - ОЧЕНЬ КОМПАКТНО */}
+                  {/* Product Grid */}
                   <div className="flex-1 overflow-y-auto min-h-0">
                     {paginatedProducts.length === 0 ? (
                       <div className="text-center py-12 flex flex-col items-center justify-center h-full">
@@ -587,12 +671,10 @@ const ElectroMaxPro = () => {
                             key={product.id} 
                             className="bg-gray-850 border border-gray-700 rounded-md p-2 hover:bg-gray-800 hover:border-teal-600 transition-all group cursor-pointer relative"
                           >
-                            {/* Product ID Badge */}
                             <div className="absolute top-1 right-1 w-6 h-6 rounded bg-gray-700 flex items-center justify-center text-xs font-bold text-gray-300 group-hover:bg-teal-600 group-hover:text-white transition-colors">
                               #{product.id}
                             </div>
 
-                            {/* Content */}
                             <div className="min-w-0 pr-6">
                               <p className="text-xs font-semibold text-white truncate line-clamp-2 leading-tight">
                                 {product.name}
@@ -613,10 +695,10 @@ const ElectroMaxPro = () => {
                             <div className="mt-1.5 flex items-end justify-between gap-1">
                               <div className="min-w-0">
                                 <p className="text-sm font-black text-teal-400 leading-none">
-                                  ${parseFloat(product.price).toFixed(2)}
+                                  ${ (Number(product.price) || 0).toFixed(2) }
                                 </p>
                                 <p className="text-xs text-gray-500 leading-none">
-                                  {(product.price * exchangeRate / 1000).toFixed(1)}K
+                                  { ((Number(product.price) || 0) * exchangeRate / 1000).toFixed(1) }K
                                 </p>
                               </div>
                               <button 
@@ -717,21 +799,21 @@ const ElectroMaxPro = () => {
                             <div className="flex items-center gap-1 flex-shrink-0">
                               <div className="flex items-center bg-gray-700 rounded border border-gray-600">
                                 <button 
-                                  onClick={() => updateQuantity(item.id, item.quantity - 1)} 
+                                  onClick={() => updateQuantity(item.id, Number(item.quantity) - 1)} 
                                   className="px-1.5 py-0.5 text-gray-300 hover:text-white transition-colors text-xs"
                                 >
                                   −
                                 </button>
-                                <span className="px-1.5 py-0.5 text-xs font-bold text-white">{item.quantity}</span>
+                                <span className="px-1.5 py-0.5 text-xs font-bold text-white">{Number(item.quantity) || 0}</span>
                                 <button 
-                                  onClick={() => updateQuantity(item.id, item.quantity + 1)} 
+                                  onClick={() => updateQuantity(item.id, Number(item.quantity) + 1)} 
                                   className="px-1.5 py-0.5 text-white hover:bg-teal-700 bg-teal-600 transition-colors text-xs"
                                 >
                                   +
                                 </button>
                               </div>
                               <div className="text-right min-w-max">
-                                <p className="text-xs font-black text-teal-400">${(item.price * item.quantity).toFixed(2)}</p>
+                                <p className="text-xs font-black text-teal-400">${((Number(item.price) || 0) * (Number(item.quantity) || 0)).toFixed(2)}</p>
                               </div>
                               <button 
                                 onClick={() => removeFromCart(item.id)} 
@@ -752,14 +834,14 @@ const ElectroMaxPro = () => {
                           </div>
                           <div className="bg-gray-800 p-2 rounded border border-gray-700">
                             <div className="text-xs text-gray-400">Единиц</div>
-                            <div className="font-black text-white text-lg">{cart.reduce((s, it) => s + it.quantity, 0)}</div>
+                            <div className="font-black text-white text-lg">{cart.reduce((s, it) => s + (Number(it.quantity) || 0), 0)}</div>
                           </div>
                         </div>
 
                         <div className="bg-teal-600/20 border border-teal-600/50 p-2.5 rounded">
                           <div className="text-xs text-gray-400">Итого</div>
                           <div className="flex items-baseline justify-between">
-                            <div className="text-2xl font-black text-teal-400">${calculateTotal().toFixed(2)}</div>
+                            <div className="text-2xl font-black text-teal-400">${(calculateTotal()).toFixed(2)}</div>
                             <div className="text-xs text-gray-300">{(calculateTotal() * exchangeRate).toFixed(0)} сум</div>
                           </div>
                         </div>
@@ -882,10 +964,10 @@ const ElectroMaxPro = () => {
                                 className="w-24 px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs text-white"
                               />
                             ) : (
-                              <span className="font-bold text-teal-400 text-xs">${parseFloat(product.price).toFixed(2)}</span>
+                              <span className="font-bold text-teal-400 text-xs">${(Number(product.price) || 0).toFixed(2)}</span>
                             )}
                           </td>
-                          <td className="px-2 py-2 text-gray-400 text-xs">{(product.price * exchangeRate).toFixed(0)}</td>
+                          <td className="px-2 py-2 text-gray-400 text-xs">{((Number(product.price) || 0) * exchangeRate).toFixed(0)}</td>
                           <td className="px-2 py-2">
                             {editingProduct === product.id ? (
                               <div className="flex gap-1">
@@ -1010,70 +1092,82 @@ const ElectroMaxPro = () => {
                   </div>
                 </div>
 
-                {getFilteredOrders().length === 0 ? (
-                  <div className="p-12 text-center">
-                    <FileText size={40} className="mx-auto text-gray-600 mb-3" strokeWidth={1.5} />
-                    <p className="text-gray-400">Нет заказов</p>
-                  </div>
-                ) : (
-                  <div className="p-4 space-y-3">
-                    {getFilteredOrders().map(order => (
-                      <div key={order.id} className="bg-gray-850 border border-gray-700 rounded-lg p-3 hover:border-gray-600 transition-colors">
-                        <div className="flex items-start justify-between mb-2">
-                          <div className="flex-1">
-                            <h3 className="text-sm font-bold text-white">
-                              Заказ #{order.id} 
-                              {order.paymentStatus === 'due' && (
-                                <span className="ml-2 text-xs px-2 py-1 bg-red-600 rounded text-white font-semibold">В ДОЛГ</span>
-                              )}
-                            </h3>
-                            <p className="text-xs text-gray-400 flex items-center gap-2 mt-1">
-                              <Clock size={13} strokeWidth={2} /> {order.dateFormatted}
-                            </p>
-                            {order.customer?.name && (
-                              <p className="text-xs text-teal-300 mt-1">
-                                {order.customer.name} {order.customer.phone && `• ${order.customer.phone}`}
-                              </p>
-                            )}
-                          </div>
-                          <div className="flex gap-1 flex-shrink-0">
-                            <button 
-                              onClick={() => printReceipt(order)} 
-                              className="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded text-xs transition-colors flex items-center gap-1"
-                              title="Печать"
-                            >
-                              <Printer size={14} strokeWidth={2} />
-                            </button>
-                            <button 
-                              onClick={() => deleteOrder(order.id)} 
-                              className="px-2 py-1 bg-red-600/20 hover:bg-red-600/40 text-red-400 rounded text-xs transition-colors flex items-center gap-1"
-                              title="Удалить"
-                            >
-                              <Trash2 size={14} strokeWidth={2} />
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="bg-gray-900 p-2 rounded mb-2 max-h-24 overflow-y-auto">
-                          {order.items.map((item, idx) => (
-                            <div key={idx} className="flex justify-between text-xs py-0.5 border-b border-gray-800 last:border-0">
-                              <span className="text-gray-300 truncate">{item.name} <span className="text-gray-600">×{item.quantity}</span></span>
-                              <span className="font-bold text-teal-400 ml-2 flex-shrink-0">${(item.price * item.quantity).toFixed(2)}</span>
-                            </div>
-                          ))}
-                        </div>
-
-                        <div className="flex justify-between items-center">
-                          <span className="text-gray-400 text-xs">ИТОГО:</span>
-                          <div className="text-right">
-                            <div className="text-lg font-bold text-teal-400">${order.total.toFixed(2)}</div>
-                            <div className="text-xs text-gray-400">{(order.total * exchangeRate).toFixed(0)} UZS</div>
-                          </div>
-                        </div>
+                {/* safe filtered orders */}
+                {(() => {
+                  const filtered = Array.isArray(getFilteredOrders()) ? getFilteredOrders() : [];
+                  if (filtered.length === 0) {
+                    return (
+                      <div className="p-12 text-center">
+                        <FileText size={40} className="mx-auto text-gray-600 mb-3" strokeWidth={1.5} />
+                        <p className="text-gray-400">Нет заказов</p>
                       </div>
-                    ))}
-                  </div>
-                )}
+                    );
+                  }
+
+                  return (
+                    <div className="p-4 space-y-3">
+                      {filtered.map(order => (
+                        <div key={order.id} className="bg-gray-850 border border-gray-700 rounded-lg p-3 hover:border-gray-600 transition-colors">
+                          <div className="flex items-start justify-between mb-2">
+                            <div className="flex-1">
+                              <h3 className="text-sm font-bold text-white">
+                                Заказ #{order.id} 
+                                {order?.paymentStatus === 'due' && (
+                                  <span className="ml-2 text-xs px-2 py-1 bg-red-600 rounded text-white font-semibold">В ДОЛГ</span>
+                                )}
+                              </h3>
+                              <p className="text-xs text-gray-400 flex items-center gap-2 mt-1">
+                                <Clock size={13} strokeWidth={2} /> {order.dateFormatted}
+                              </p>
+                              {order.customer?.name && (
+                                <p className="text-xs text-teal-300 mt-1">
+                                  {order.customer.name} {order.customer.phone && `• ${order.customer.phone}`}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex gap-1 flex-shrink-0">
+                              <button 
+                                onClick={() => printReceipt(order)} 
+                                className="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded text-xs transition-colors flex items-center gap-1"
+                                title="Печать"
+                              >
+                                <Printer size={14} strokeWidth={2} />
+                              </button>
+                              <button 
+                                onClick={() => deleteOrder(order.id)} 
+                                className="px-2 py-1 bg-red-600/20 hover:bg-red-600/40 text-red-400 rounded text-xs transition-colors flex items-center gap-1"
+                                title="Удалить"
+                              >
+                                <Trash2 size={14} strokeWidth={2} />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="bg-gray-900 p-2 rounded mb-2 max-h-24 overflow-y-auto">
+                            {(Array.isArray(order.items) ? order.items : []).map((item, idx) => {
+                              const qty = Number(item?.quantity) || 0;
+                              const price = Number(item?.price) || 0;
+                              return (
+                                <div key={idx} className="flex justify-between text-xs py-0.5 border-b border-gray-800 last:border-0">
+                                  <span className="text-gray-300 truncate">{item?.name ?? 'Неизвестно'} <span className="text-gray-600">×{qty}</span></span>
+                                  <span className="font-bold text-teal-400 ml-2 flex-shrink-0">${(price * qty).toFixed(2)}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div className="flex justify-between items-center">
+                            <span className="text-gray-400 text-xs">ИТОГО:</span>
+                            <div className="text-right">
+                              <div className="text-lg font-bold text-teal-400">${(Number(order?.total) || 0).toFixed(2)}</div>
+                              <div className="text-xs text-gray-400">{((Number(order?.total) || 0) * exchangeRate).toFixed(0)} UZS</div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           )}
@@ -1111,8 +1205,8 @@ const ElectroMaxPro = () => {
                     <TrendingUp size={16} className="text-teal-400" strokeWidth={2} />
                   </div>
                   <div className="text-xs text-gray-400 mb-1">Выручка</div>
-                  <div className="text-2xl font-bold text-white mb-1">${analytics.totalRevenue.toFixed(2)}</div>
-                  <div className="text-xs text-gray-500">{(analytics.totalRevenue * exchangeRate).toFixed(0)} UZS</div>
+                  <div className="text-2xl font-bold text-white mb-1">${(Number(analytics?.totalRevenue) || 0).toFixed(2)}</div>
+                  <div className="text-xs text-gray-500">{((Number(analytics?.totalRevenue) || 0) * exchangeRate).toFixed(0)} UZS</div>
                 </div>
 
                 <div className="bg-gray-800 p-4 rounded-lg border border-gray-700 hover:border-teal-600 transition-colors">
@@ -1123,7 +1217,7 @@ const ElectroMaxPro = () => {
                     <TrendingUp size={16} className="text-teal-400" strokeWidth={2} />
                   </div>
                   <div className="text-xs text-gray-400 mb-1">Заказов</div>
-                  <div className="text-2xl font-bold text-white mb-1">{analytics.totalOrders}</div>
+                  <div className="text-2xl font-bold text-white mb-1">{analytics?.totalOrders ?? 0}</div>
                   <div className="text-xs text-gray-500">За период</div>
                 </div>
 
@@ -1135,8 +1229,8 @@ const ElectroMaxPro = () => {
                     <TrendingUp size={16} className="text-teal-400" strokeWidth={2} />
                   </div>
                   <div className="text-xs text-gray-400 mb-1">Ср. чек</div>
-                  <div className="text-2xl font-bold text-white mb-1">${analytics.avgOrderValue.toFixed(2)}</div>
-                  <div className="text-xs text-gray-500">{(analytics.avgOrderValue * exchangeRate).toFixed(0)} UZS</div>
+                  <div className="text-2xl font-bold text-white mb-1">${(Number(analytics?.avgOrderValue) || 0).toFixed(2)}</div>
+                  <div className="text-xs text-gray-500">{((Number(analytics?.avgOrderValue) || 0) * exchangeRate).toFixed(0)} UZS</div>
                 </div>
 
                 <div className="bg-gray-800 p-4 rounded-lg border border-gray-700 hover:border-teal-600 transition-colors">
@@ -1147,8 +1241,8 @@ const ElectroMaxPro = () => {
                     <TrendingUp size={16} className="text-teal-400" strokeWidth={2} />
                   </div>
                   <div className="text-xs text-gray-400 mb-1">Сегодня</div>
-                  <div className="text-2xl font-bold text-white mb-1">${analytics.todayRevenue.toFixed(2)}</div>
-                  <div className="text-xs text-gray-500">{analytics.todayOrders} заказов</div>
+                  <div className="text-2xl font-bold text-white mb-1">${(Number(analytics?.todayRevenue) || 0).toFixed(2)}</div>
+                  <div className="text-xs text-gray-500">{analytics?.todayOrders ?? 0} заказов</div>
                 </div>
               </div>
 
@@ -1157,11 +1251,11 @@ const ElectroMaxPro = () => {
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-sm font-bold text-white">Топ-10 товаров</h3>
                   </div>
-                  {analytics.topProducts.length === 0 ? (
+                  {(Array.isArray(analytics?.topProducts) ? analytics.topProducts : []).length === 0 ? (
                     <div className="text-center text-gray-400 py-8">Нет данных</div>
                   ) : (
                     <div className="space-y-2">
-                      {analytics.topProducts.map(([name, data], idx) => (
+                      {(analytics?.topProducts || []).map(([name, data], idx) => (
                         <div key={idx} className="flex items-center justify-between p-2 bg-gray-850 rounded hover:bg-gray-800 transition-colors">
                           <div className="flex items-center gap-2 min-w-0">
                             <div className="w-7 h-7 bg-teal-600 rounded flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
@@ -1169,12 +1263,12 @@ const ElectroMaxPro = () => {
                             </div>
                             <div className="min-w-0">
                               <div className="text-xs text-white truncate">{name}</div>
-                              <div className="text-xs text-gray-500">{data.quantity} шт</div>
+                              <div className="text-xs text-gray-500">{(data?.quantity) || 0} шт</div>
                             </div>
                           </div>
                           <div className="text-right ml-2 flex-shrink-0">
-                            <div className="text-xs font-bold text-teal-400">${data.revenue.toFixed(2)}</div>
-                            <div className="text-xs text-gray-500">{(data.revenue * exchangeRate / 1000).toFixed(1)}K</div>
+                            <div className="text-xs font-bold text-teal-400">${(Number(data?.revenue) || 0).toFixed(2)}</div>
+                            <div className="text-xs text-gray-500">{(((Number(data?.revenue) || 0) * exchangeRate) / 1000).toFixed(1)}K</div>
                           </div>
                         </div>
                       ))}
@@ -1186,20 +1280,20 @@ const ElectroMaxPro = () => {
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-sm font-bold text-white">Доход по категориям</h3>
                   </div>
-                  {Object.entries(analytics.categoryRevenue).length === 0 ? (
+                  {Object.entries(analytics?.categoryRevenue || {}).length === 0 ? (
                     <div className="text-center text-gray-400 py-8">Нет данных</div>
                   ) : (
                     <div className="space-y-3">
-                      {Object.entries(analytics.categoryRevenue).sort(([, a], [, b]) => b - a).map(([category, revenue], idx) => (
+                      {Object.entries(analytics?.categoryRevenue || {}).sort(([, a], [, b]) => b - a).map(([category, revenue], idx) => (
                         <div key={idx}>
                           <div className="flex items-center justify-between mb-1">
                             <div className="text-xs text-white font-medium">{category}</div>
-                            <div className="text-xs font-bold text-teal-400">${revenue.toFixed(2)}</div>
+                            <div className="text-xs font-bold text-teal-400">${(Number(revenue) || 0).toFixed(2)}</div>
                           </div>
                           <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
                             <div 
                               className="h-full bg-gradient-to-r from-teal-600 to-teal-400 rounded-full transition-all" 
-                              style={{ width: `${(revenue / (analytics.totalRevenue || 1)) * 100}%` }} 
+                              style={{ width: `${((Number(revenue) || 0) / (Number(analytics?.totalRevenue) || 1)) * 100}%` }} 
                             />
                           </div>
                         </div>
@@ -1254,7 +1348,7 @@ const ElectroMaxPro = () => {
                               {d.paid && <span className="text-xs px-2 py-0.5 bg-green-900/40 text-green-300 rounded-full">✓ Оплачено</span>}
                             </div>
                             <div className="text-xs text-gray-400 space-y-1">
-                              <div>Сумма: <span className="font-bold text-teal-400">${d.amount.toFixed(2)}</span></div>
+                              <div>Сумма: <span className="font-bold text-teal-400">${(Number(d.amount) || 0).toFixed(2)}</span></div>
                               <div>Создан: {new Date(d.createdAt).toLocaleString()}</div>
                               {d.customerPhone && <div>Телефон: {d.customerPhone}</div>}
                               {d.dueDate && <div>Срок: {new Date(d.dueDate).toLocaleDateString()}</div>}
@@ -1379,7 +1473,7 @@ const ElectroMaxPro = () => {
         </div>
       )}
 
-      {/* Beautiful Confirmation Dialog */}
+      {/* Confirmation Dialog */}
       {confirmDialog.show && (
         <div 
           className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 backdrop-blur-sm" 
@@ -1427,7 +1521,7 @@ const ElectroMaxPro = () => {
         </div>
       )}
 
-      {/* Calculator Modal (улучшенный) */}
+      {/* Calculator Modal */}
       {showCalculator && (
         <div 
           className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 backdrop-blur-sm" 
