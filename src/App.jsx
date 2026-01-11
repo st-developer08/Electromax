@@ -183,25 +183,46 @@ const ElectroMaxPro = () => {
     loadProducts();
 
     // safe parse + normalize orders
-    const savedOrdersRaw = safeParse(localStorage.getItem('electromax_orders'));
-    if (Array.isArray(savedOrdersRaw)) {
-      const normalized = savedOrdersRaw.map(o => {
-        const items = Array.isArray(o.items) ? o.items.map(it => ({
-          ...it,
-          quantity: Number(it?.quantity) || 0,
-          price: Number(it?.price) || 0
-        })) : [];
+    // safeParse уже у вас есть
+const savedOrdersRaw = safeParse(localStorage.getItem('electromax_orders'));
+let normalized = [];
 
-        return {
-          ...o,
-          items,
-          total: Number(o?.total) || items.reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.quantity) || 0), 0),
-          date: o?.date || new Date().toISOString(),
-          dateFormatted: o?.dateFormatted || new Date(o?.date || Date.now()).toLocaleString('ru-RU')
-        };
-      });
-      setOrders(normalized);
+if (Array.isArray(savedOrdersRaw)) {
+  normalized = savedOrdersRaw.map(o => {
+    const items = Array.isArray(o.items) ? o.items.map(it => ({
+      ...it,
+      quantity: Number(it?.quantity) || 0,
+      price: Number(it?.price) || 0
+    })) : [];
+
+    return {
+      ...o,
+      items,
+      total: Number(o?.total) || items.reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.quantity) || 0), 0),
+      date: o?.date || new Date().toISOString(),
+      dateFormatted: o?.dateFormatted || new Date(o?.date || Date.now()).toLocaleString('ru-RU')
+    };
+  });
+
+  // Миграция: удалить "демо" записи — у вас demo id были 1..120.
+  // Реальные заказы создаются через Date.now() (id примерно >= 1e12).
+  const sanitized = normalized.filter(o => {
+    const idNum = Number(o?.id) || 0;
+    if (idNum === 0) return false; // отбросим некорректные
+    if (idNum < 1e12) {
+      // возможно демо / тест — удаляем
+      return false;
     }
+    return true;
+  });
+
+  // Если после фильтрации нет заказов — просто пустой массив
+  setOrders(sanitized);
+  // перезаписываем localStorage так, чтобы все клиенты получили исправленные данные
+  localStorage.setItem('electromax_orders', JSON.stringify(sanitized));
+} else {
+  setOrders([]); // явно пусто, если нет валидных данных
+}
 
     // safe parse debts
     const savedDebtsRaw = safeParse(localStorage.getItem('electromax_debts'));
