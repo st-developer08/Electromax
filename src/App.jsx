@@ -3,7 +3,7 @@ import {
   TrendingUp, Package, DollarSign, Calendar, Search, ShoppingCart, Printer,
   BarChart3, Users, FileText, Calculator, Clock, AlertCircle,
   Check, X, Edit2, Trash2, Plus, ArrowLeft, ArrowRight, Download,
-  RefreshCw, Menu, Zap, Lightbulb, ChevronDown, ChevronUp
+  RefreshCw, Menu, Zap, Lightbulb, ChevronDown, ChevronUp, List, LayoutList
 } from 'lucide-react';
 
 /**
@@ -126,6 +126,7 @@ const ElectroMaxPro = () => {
   const [showDebtModal, setShowDebtModal] = useState(false);
   const [debtForm, setDebtForm] = useState({ customerName: '', customerPhone: '', amount: '', dueDate: '', note: '' });
   const [confirmDialog, setConfirmDialog] = useState({ show: false, title: '', message: '', onConfirm: null, isDangerous: false });
+  const [productListView, setProductListView] = useState('cards'); // 'cards' | 'compact'
   const itemsPerPage = 12;
 
   const safeParse = (str) => {
@@ -154,12 +155,22 @@ const ElectroMaxPro = () => {
     return productsList;
   };
 
+  // Try to fetch exchange rate (prefers saved value)
   const fetchExchangeRate = async () => {
     try {
+      const savedRaw = localStorage.getItem('electromax_rate');
+      if (savedRaw) {
+        const parsed = JSON.parse(savedRaw);
+        if (typeof parsed === 'number' && !isNaN(parsed) && parsed > 0) {
+          setExchangeRate(parsed);
+          return;
+        }
+      }
       const uzbRate = 12000;
       setExchangeRate(uzbRate);
     } catch (error) {
       console.log('Используется стандартный курс');
+      setExchangeRate(12000);
     }
   };
 
@@ -301,11 +312,20 @@ const ElectroMaxPro = () => {
       }
     }
 
+    // load cart if exists
+    const savedCart = safeParse(localStorage.getItem('electromax_cart'));
+    if (Array.isArray(savedCart)) {
+      setCart(savedCart.map(it => ({ ...it, quantity: Number(it.quantity) || 0, price: Number(it.price) || 0 })));
+    }
+
+    // load saved exchange rate if present; fetchExchangeRate will prefer saved value
     fetchExchangeRate();
+
     const interval = setInterval(fetchExchangeRate, 300000);
     return () => clearInterval(interval);
   }, []);
 
+  // persist debts
   useEffect(() => {
     if (Array.isArray(debts) && debts.length > 0) {
       const debtData = debts.map(d => ({
@@ -334,8 +354,27 @@ const ElectroMaxPro = () => {
     }
   }, [orders]);
 
+  useEffect(() => {
+    if (cart.length > 0) {
+      localStorage.setItem('electromax_cart', JSON.stringify(cart));
+    } else {
+      localStorage.setItem('electromax_cart', JSON.stringify([]));
+    }
+  }, [cart]);
+
+  // Persist exchange rate when user edits it
+  useEffect(() => {
+    try {
+      if (typeof exchangeRate === 'number' && !isNaN(exchangeRate)) {
+        localStorage.setItem('electromax_rate', JSON.stringify(exchangeRate));
+      }
+    } catch (e) {
+      console.error('save exchangeRate error', e);
+    }
+  }, [exchangeRate]);
+
   const getCategories = () => {
-    return ['all', ...new Set((Array.isArray(products) ? products : []).map(p => p.category))];
+    return [, ...new Set((Array.isArray(products) ? products : []).map(p => p.category))];
   };
 
   const filteredProducts = useMemo(() => {
@@ -362,18 +401,19 @@ const ElectroMaxPro = () => {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, filterCategory]);
+  }, [searchTerm, filterCategory, productListView]);
 
-  const addToCart = (product) => {
+  // allow qty param
+  const addToCart = (product, qty = 1) => {
     const existingItem = cart.find(item => item.id === product.id);
     if (existingItem) {
       setCart(cart.map(item =>
         item.id === product.id
-          ? { ...item, quantity: item.quantity + 1 }
+          ? { ...item, quantity: Number(item.quantity || 0) + Number(qty) }
           : item
       ));
     } else {
-      setCart([...cart, { ...product, quantity: 1 }]);
+      setCart([...cart, { ...product, quantity: qty }]);
     }
   };
 
@@ -441,77 +481,200 @@ const ElectroMaxPro = () => {
     });
   };
 
-  const printReceipt = (order) => {
-    try {
-      const printWindow = window.open('', '_blank');
-      const itemsHtml = (Array.isArray(order.items) ? order.items : []).map(item => {
-        const qty = Number(item?.quantity) || 0;
-        const price = Number(item?.price) || 0;
-        return `
-          <div class="item">
-            <span>${(item?.name) ?? 'Неизвестно'} x${qty}</span>
-            <span>$${(price * qty).toFixed(2)}</span>
-          </div>
-        `;
-      }).join('');
+const printReceipt = (order, exchangeRate = 12500) => {
+  try {
+    const printWindow = window.open('', '_blank');
+    
+    // Функция для форматирования чисел (добавляет пробелы: 10 000 000)
+    const formatUZS = (num) => {
+      return Math.round(num).toLocaleString('ru-RU') + ' UZS';
+    };
 
-      const receiptHTML = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>Чек #${order.id}</title>
-          <style>
-            body { font-family: Arial, sans-serif; max-width: 320px; margin: 20px auto; color:#111; }
-            .header { text-align: center; border-bottom: 1px dashed #111; padding-bottom: 8px; margin-bottom: 8px; }
-            .item { display: flex; justify-content: space-between; margin: 4px 0; }
-            .total { border-top: 1px dashed #111; margin-top: 8px; padding-top: 8px; font-weight: bold; }
-            @media print { body { margin: 0; } }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            
-            <h2>ELECTROMAX</h2>
-            <p>Чек #${order.id}</p>
-            <p>${order.dateFormatted}</p>
-            ${order.customer?.name ? `<p>Клиент: ${order.customer.name}</p>` : ''}
-             <p>Свяжитесь с нами по телефону:</p>
-              <p>+998 99 668 39 85</p>
-              <p>+998-(90)-455-30-07</p>
-          </div>
-          ${itemsHtml}
-          <div class="total">
-            <div class="item">
-              <span>ИТОГО:</span>
-              <span>$${(Number(order?.total) || 0).toFixed(2)}</span>
-            </div>
-            <div class="item">
-              <span>В сумах:</span>
-              <span>${((Number(order?.total) || 0) * exchangeRate).toFixed(0)} UZS</span>
-            </div>
-          </div>
-          <p style="text-align: center; margin-top: 12px;">Спасибо за покупку!</p>
-        </body>
-        </html>
+    const itemsHtml = (Array.isArray(order.items) ? order.items : []).map(item => {
+      const qty = Number(item?.quantity) || 0;
+      const priceInUsd = Number(item?.price) || 0;
+      const priceInUzs = priceInUsd * exchangeRate;
+      const totalInUzs = priceInUzs * qty;
+
+      return `
+        <tr class="item-row">
+          <td class="item-info">
+            <div class="item-name">${(item?.name) ?? 'Неизвестно'}</div>
+            <div class="item-meta">${qty} шт. × ${formatUZS(priceInUzs)}</div>
+          </td>
+          <td class="item-total">${formatUZS(totalInUzs)}</td>
+        </tr>
       `;
-      printWindow.document.write(receiptHTML);
-      printWindow.document.close();
+    }).join('');
+
+    const totalSumUzs = (Number(order?.total) || 0) * exchangeRate;
+
+    const receiptHTML = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Чек #${order.id}</title>
+        <meta charset="UTF-8">
+        <style>
+          @page {
+            size: portrait;
+            margin: 10mm;
+          }
+          
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          
+          body { 
+            font-family: Arial, sans-serif;
+            background: white;
+            color: black;
+            line-height: 1.4;
+          }
+
+          .container {
+            max-width: 100mm; /* Оптимально для А4 или чековой ленты */
+            margin: 0 auto;
+            border: 1px solid #000;
+            padding: 20px;
+          }
+
+          .header {
+            text-align: center;
+            border-bottom: 2px solid #000;
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+          }
+
+          .logo {
+            font-size: 24px;
+            font-weight: bold;
+            text-transform: uppercase;
+          }
+
+          .order-title {
+            font-size: 18px;
+            margin: 10px 0;
+          }
+
+          .details {
+            font-size: 14px;
+            margin-bottom: 20px;
+          }
+
+          .details div {
+            display: flex;
+            justify-content: space-between;
+          }
+
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+          }
+
+          .item-row {
+            border-bottom: 1px dashed #000;
+          }
+
+          .item-info {
+            padding: 10px 0;
+            text-align: left;
+          }
+
+          .item-name {
+            font-weight: bold;
+            font-size: 15px;
+          }
+
+          .item-meta {
+            font-size: 13px;
+          }
+
+          .item-total {
+            text-align: right;
+            font-weight: bold;
+            vertical-align: middle;
+          }
+
+          .total-section {
+            border-top: 2px solid #000;
+            padding-top: 15px;
+            text-align: right;
+          }
+
+          .total-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 20px;
+            font-weight: bold;
+          }
+
+          .footer {
+            margin-top: 30px;
+            text-align: center;
+            font-size: 12px;
+            border-top: 1px solid #000;
+            padding-top: 10px;
+          }
+
+          @media print {
+            .container { border: none; width: 100%; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <div class="logo">ELECTROMAX</div>
+            <div class="order-title">ТОВАРНЫЙ ЧЕК #${order.id}</div>
+          </div>
+
+          <div class="details">
+            <div><span>Дата:</span> <span>${order.dateFormatted}</span></div>
+            ${order.customer?.name ? `<div><span>Клиент:</span> <span>${order.customer.name}</span></div>` : ''}
+            <div><span>Телефон магазина:</span> <span>+998 (99) 668-39-85</span></div>
+          </div>
+
+          <table>
+            <thead>
+              <tr style="border-bottom: 1px solid #000;">
+                <th style="text-align: left; padding-bottom: 5px;">Наименование</th>
+                <th style="text-align: right; padding-bottom: 5px;">Сумма</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${itemsHtml}
+            </tbody>
+          </table>
+
+          <div class="total-section">
+            <div class="total-row">
+              <span>ИТОГО К ОПЛАТЕ:</span>
+              <span>${formatUZS(totalSumUzs)}</span>
+            </div>
+          </div>
+
+          <div class="footer">
+            <p>Спасибо за покупку!</p>
+            <p>Пожалуйста, сохраняйте чек для гарантии.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+    
+    printWindow.document.write(receiptHTML);
+    printWindow.document.close();
+    
+    setTimeout(() => {
       printWindow.focus();
-      setTimeout(() => {
-        printWindow.print();
-        printWindow.close();
-      }, 250);
-    } catch (e) {
-      console.error('printReceipt error', e);
-      setConfirmDialog({
-        show: true,
-        title: '❌ Ошибка',
-        message: 'Не удалось открыть печать',
-        onConfirm: null,
-        isDangerous: false
-      });
-    }
-  };
+      printWindow.print();
+      printWindow.close();
+    }, 500);
+
+  } catch (e) {
+    console.error('Ошибка печати:', e);
+  }
+};
 
   const deleteOrder = (orderId) => {
     setConfirmDialog({
@@ -641,6 +804,9 @@ const ElectroMaxPro = () => {
     { id: 'debts', label: 'Долги', icon: DollarSign, badge: debts.filter(d => !d.paid).length },
   ];
 
+  // helper to format UZS shown succinctly
+  const formatUZS = (usd) => Math.round((Number(usd) || 0) * (Number(exchangeRate) || 1)).toLocaleString('ru-RU');
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-50 text-slate-900 flex">
       {/* SIDEBAR */}
@@ -740,14 +906,9 @@ const ElectroMaxPro = () => {
               {/* Products Catalog */}
               <div className="lg:col-span-4 flex flex-col h-full min-h-0">
                 <div className="bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col h-full shadow-sm hover:shadow-md transition-shadow">
-                  <div className="">
-                   
-                    
-                  </div>
-
-                  {/* SEARCH */}
+                  {/* SEARCH + View Toggle */}
                   <div className="p-3 border-b border-slate-200 bg-white space-y-2">
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 items-center">
                       <div className="flex-1 relative">
                         <Search size={22} className="absolute left-2.5 top-3.5 text-emerald-600" strokeWidth={2} />
                         <input
@@ -766,27 +927,34 @@ const ElectroMaxPro = () => {
                           </button>
                         )}
                       </div>
+
+                      {/* view toggle buttons (small, unobtrusive) */}
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => setProductListView('cards')}
+                          title="Карточки"
+                          className={`p-2 rounded-md text-xs transition-colors ${productListView === 'cards' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600 hover:bg-emerald-50'}`}
+                        >
+                          <LayoutList size={14} />
+                        </button>
+                        <button
+                          onClick={() => setProductListView('compact')}
+                          title="Компактно"
+                          className={`p-2 rounded-md text-xs transition-colors ${productListView === 'compact' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600 hover:bg-emerald-50'}`}
+                        >
+                          <List size={14} />
+                        </button>
+                      </div>
                     </div>
-                    
+
                     {/* Category Filter */}
                     <div className="flex gap-1.5 flex-wrap">
-                      {getCategories().map(cat => (
-                        <button
-                          key={cat}
-                          onClick={() => setFilterCategory(cat)}
-                          className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                            filterCategory === cat
-                              ? 'bg-emerald-500 text-white shadow-md'
-                              : 'bg-slate-100 text-slate-700 hover:bg-emerald-100 border border-slate-200'
-                          }`}
-                        >
-                          
-                        </button>
-                      ))}
+                      
+                      
                     </div>
                   </div>
 
-                  {/* Product Grid */}
+                  {/* Product Grid (cards OR compact table) */}
                   <div className="flex-1 overflow-y-auto min-h-0">
                     {paginatedProducts.length === 0 ? (
                       <div className="text-center py-12 flex flex-col items-center justify-center h-full">
@@ -795,58 +963,101 @@ const ElectroMaxPro = () => {
                         {searchTerm && <p className="text-slate-400 text-xs mt-1">Попробуйте другой поисковый запрос</p>}
                       </div>
                     ) : (
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3">
-                        {paginatedProducts.map(product => (
-                          <div 
-                            key={product.id} 
-                            className="bg-white border border-slate-200 hover:border-emerald-400 rounded-lg p-2 hover:shadow-md transition-all group flex flex-col h-full"
-                          >
-                            {/* Name */}
-                            <p className="text-xs font-semibold text-slate-900 line-clamp-3 mb-1 flex-grow leading-tight">
-                              {product.highlights?.name ? (
-                                <HighlightedText text={product.highlights.name} />
-                              ) : (
-                                product.name
-                              )}
-                            </p>
-
-                            {/* Category & Stock */}
-                            <div className="flex gap-0.5 mb-1 flex-wrap">
-                              <span className="px-1 py-0.5 bg-slate-100 rounded text-xs text-slate-700 font-medium truncate leading-tight">
-                                {product.highlights?.category ? (
-                                  <HighlightedText text={product.highlights.category} />
-                                ) : (
-                                  product.category || '—'
-                                )}
-                              </span>
-                              {product.stock !== undefined && product.stock !== null && (
-                                <span className={`px-1 py-0.5 rounded text-xs font-bold whitespace-nowrap leading-tight ${product.stock > 10 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                                  {product.stock}
-                                </span>
-                              )}
-                            </div>
-
-                            {/* Price & Button */}
-                            <div className="flex items-end justify-between gap-1 mt-auto">
-                              <div className="min-w-0">
-                                <p className="text-sm font-black text-emerald-600 leading-none">
-                                  ${ (Number(product.price) || 0).toFixed(2) }
-                                </p>
-                                <p className="text-xs text-slate-500 leading-none">
-                                  { ((Number(product.price) || 0) * exchangeRate / 1000).toFixed(1) }K
-                                </p>
-                              </div>
-                              <button 
-                                onClick={() => addToCart(product)} 
-                                className="w-7 h-7 bg-emerald-500 hover:bg-emerald-600 text-white rounded-md flex items-center justify-center transition-all shadow-sm hover:shadow-md flex-shrink-0"
-                                title="Добавить в корзину"
+                      <>
+                        {productListView === 'cards' ? (
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3">
+                            {paginatedProducts.map(product => (
+                              <div
+                                key={product.id}
+                                onClick={() => addToCart(product)}
+                                className="bg-white border border-slate-200 hover:border-emerald-400 rounded-lg p-2 hover:shadow-md transition-all group flex flex-col h-full cursor-pointer"
                               >
-                                <Plus size={14} strokeWidth={3} />
-                              </button>
-                            </div>
+                                {/* Name */}
+                                <p className="text-xs font-semibold text-slate-900 line-clamp-3 mb-1 flex-grow leading-tight">
+                                  {product.highlights?.name ? (
+                                    <HighlightedText text={product.highlights.name} />
+                                  ) : (
+                                    product.name
+                                  )}
+                                </p>
+
+                                {/* Category & Stock */}
+                                <div className="flex gap-0.5 mb-1 flex-wrap">
+                                  <span className="px-1 py-0.5 bg-slate-100 rounded text-xs text-slate-700 font-medium truncate leading-tight">
+                                    {product.highlights?.category ? (
+                                      <HighlightedText text={product.highlights.category} />
+                                    ) : (
+                                      product.category || '—'
+                                    )}
+                                  </span>
+                                  {product.stock !== undefined && product.stock !== null && (
+                                    <span className={`px-1 py-0.5 rounded text-xs font-bold whitespace-nowrap leading-tight ${product.stock > 10 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                                      {product.stock}
+                                    </span>
+                                  )}
+                                </div>
+
+                                {/* Price & Button */}
+                                <div className="flex items-end justify-between gap-1 mt-auto">
+                                  <div className="min-w-0">
+                                    <p className="text-sm font-black text-emerald-600 leading-none">
+                                      ${ (Number(product.price) || 0).toFixed(2) }
+                                    </p>
+                                    <p className="text-xs text-slate-500 leading-none">
+                                      { ((Number(product.price) || 0) * exchangeRate / 1000).toFixed(1) }K
+                                    </p>
+                                  </div>
+                                  <button 
+                                    onClick={(e) => { e.stopPropagation(); addToCart(product); }} 
+                                    className="w-7 h-7 bg-emerald-500 hover:bg-emerald-600 text-white rounded-md flex items-center justify-center transition-all shadow-sm hover:shadow-md flex-shrink-0"
+                                    title="Добавить в корзину"
+                                  >
+                                    <Plus size={14} strokeWidth={3} />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
+                        ) : (
+                          <div className="p-3 overflow-x-auto">
+                            <table className="w-full text-xs">
+                              <thead className="bg-slate-100 border-b border-slate-200">
+                                <tr>
+                                  <th className="px-2 py-2 text-left font-bold text-slate-900">НАЗВАНИЕ</th>
+                                  <th className="px-2 py-2 text-left font-bold text-slate-900">КАТЕГОРИЯ</th>
+                                  <th className="px-2 py-2 text-right font-bold text-slate-900">USD</th>
+                                  <th className="px-2 py-2 text-right font-bold text-slate-900">UZS</th>
+                                  <th className="px-2 py-2 text-center font-bold text-slate-900">ОСТ.</th>
+                                  <th className="px-2 py-0.5 text-center font-bold text-slate-900">ДЕЙСТВИЯ</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-200">
+                                {paginatedProducts.map(product => (
+                                  <tr key={product.id} className="hover:bg-slate-50 transition-colors">
+                                    <td className="px-2 py-1.5">
+                                      <div className="min-w-0">
+                                        <span className="text-slate-900 font-medium truncate" title={product.name}>
+                                          {product.highlights?.name ? <HighlightedText text={product.highlights.name} /> : product.name}
+                                        </span>
+                                      </div>
+                                    </td>
+                                    <td className="px-2 py-1.5 text-slate-700">{product.category || '—'}</td>
+                                    <td className="px-2 py-1.5 text-right font-bold text-emerald-600">${(Number(product.price) || 0).toFixed(2)}</td>
+                                    <td className="px-2 py-1.5 text-right text-slate-700">{formatUZS(product.price)}</td>
+                                    <td className="px-2 py-1.5 text-center">{product.stock ?? '—'}</td>
+                                    <td className="px-2 py-1.5 text-center">
+                                      <div className="flex items-center gap-1 justify-center">
+                                        <button onClick={() => addToCart(product, 1)} className="px-2 py-1 bg-emerald-500 hover:bg-emerald-600 text-white rounded text-xs font-bold">+1</button>
+                                        <button onClick={() => addToCart(product, 5)} className="px-2 py-1 bg-slate-200 hover:bg-slate-300 text-slate-900 rounded text-xs font-bold">+5</button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
 
@@ -891,8 +1102,8 @@ const ElectroMaxPro = () => {
               </div>
 
               {/* CART SIDEBAR */}
-              <div className="lg:col-span-[400px] h-full min-h-0">
-                <div className="bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col h-full shadow-sm hover:shadow-md transition-shadow">
+              <div className="lg:col-span-1 h-full min-h-0">
+                <div className="bg-white border border-slate-200 rounded-xl overflow-visible flex flex-col h-full shadow-sm hover:shadow-md transition-shadow">
                   <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between bg-gradient-to-r from-slate-50 to-white">
                     <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
                       <ShoppingCart size={18} className="text-emerald-600" strokeWidth={2.5} /> Корзина
@@ -928,7 +1139,30 @@ const ElectroMaxPro = () => {
                         {cart.map(item => (
                           <div key={item.id} className="flex items-start justify-between bg-emerald-50 p-2 rounded-lg border border-emerald-200 hover:border-emerald-400 transition-colors group text-xs">
                             <div className="min-w-0 flex-1">
-                              <p className="font-semibold text-slate-900 truncate">{item.name}</p>
+                              <div
+                                className="relative cart-item max-w-[14rem]"
+                                tabIndex={0}
+                                aria-describedby={`cart-tooltip-${item.id ?? btoa(item.name).slice(0,8)}`}
+                              >
+                                <p
+                                  className="font-semibold text-slate-900 truncate"
+                                  title={item.name}
+                                >
+                                  {item.name}
+                                </p>
+
+                                {/* всплывающее окно сверху с плавной анимацией */}
+                                <div
+                                  id={`cart-tooltip-${item.id ?? btoa(item.name).slice(0,8)}`}
+                                  role="tooltip"
+                                  className="cart-tooltip absolute left-0 bottom-full mb-2 w-auto max-w-[20rem] opacity-0 invisible transform translate-y-2 transition-all duration-200 ease-out pointer-events-none z-50"
+                                >
+                                  <div className="bg-slate-900 text-white text-[13px] px-3 py-2 rounded shadow break-words">
+                                    {item.name}
+                                  </div>
+                                  <div className="tooltip-arrow w-3 h-3 rotate-45 bg-slate-900 absolute left-4 -bottom-1" />
+                                </div>
+                              </div>
                             </div>
                             <div className="flex items-center gap-1 flex-shrink-0">
                               <div className="flex items-center bg-white rounded border border-slate-300">
@@ -958,15 +1192,13 @@ const ElectroMaxPro = () => {
                         ))}
                       </div>
 
-                      <div className="p-3 border-t border-slate-200 space-y-3 bg-gradient-to-b from-white to-slate-50">
-                        <div className="grid grid-cols-2 gap-2">
-                          <div className="bg-emerald-50 p-2 rounded-lg border border-emerald-200 text-center">
-                            <div className="text-xs text-emerald-700 font-bold">Товаров</div>
-                            <div className="font-bold text-slate-900">{cart.length}</div>
+                      <div className="p-2 border-t border-slate-200 space-y-3 bg-gradient-to-b from-white to-slate-50">
+                        <div className="grid grid-cols-2 gap-1">
+                          <div className="">
+                            
                           </div>
-                          <div className="bg-emerald-50 p-2 rounded-lg border border-emerald-200 text-center">
-                            <div className="text-xs text-emerald-700 font-bold">Единиц</div>
-                            <div className="font-bold text-slate-900">{cart.reduce((s, it) => s + (Number(it.quantity) || 0), 0)}</div>
+                          <div className=" ">
+                           
                           </div>
                         </div>
 
@@ -976,16 +1208,16 @@ const ElectroMaxPro = () => {
                           <div className="text-xs text-emerald-700 font-medium">{(calculateTotal() * exchangeRate).toFixed(0)} сум</div>
                         </div>
 
-                        <div className="flex gap-2">
+                        <div className="flex flex-col gap-2">
                           <button 
                             onClick={() => completeOrder(false, null)} 
-                            className="flex-1 py-2.5 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-1 transition-all shadow-md hover:shadow-lg"
+                            className="flex-1 py-[10px] px-[2px] bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white rounded-lg font-bold text-[12px] flex items-center justify-center gap-1 transition-all shadow-md hover:shadow-lg"
                           >
-                            <Check size={14} strokeWidth={2.5} /> ОФОРМИТЬ
+                            <Check size={12} strokeWidth={2.0} /> ОФОРМИТЬ
                           </button>
                           <button 
                             onClick={openDebtModal} 
-                            className="flex-1 py-2.5 bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-1 transition-all shadow-md hover:shadow-lg"
+                            className="flex-1 py-[10px] px-[2px] bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-1 transition-all shadow-md hover:shadow-lg"
                           >
                             <DollarSign size={14} strokeWidth={2.5} /> ДОЛГ
                           </button>
@@ -1272,8 +1504,8 @@ const ElectroMaxPro = () => {
                           <div className="flex justify-between items-center bg-emerald-200 p-1.5 rounded border border-emerald-300 text-xs">
                             <span className="text-emerald-900 font-bold">ИТОГО:</span>
                             <div>
-                              <span className="font-bold text-emerald-700">${(Number(order?.total) || 0).toFixed(2)}</span>
-                              <span className="text-slate-700 ml-1 font-medium">{((Number(order?.total) || 0) * exchangeRate).toFixed(0)} UZS</span>
+                              <span className="font-bold  text-emerald-700">${(Number(order?.total) || 0).toFixed(2)}</span>
+                              <span className="text-slate-700 ml-1 font-medium ">{((Number(order?.total) || 0) * exchangeRate).toFixed(0)} UZS</span>
                             </div>
                           </div>
                         </div>
@@ -1651,6 +1883,24 @@ const ElectroMaxPro = () => {
                 placeholder="Введите сумму" 
                 className="w-full px-4 py-3 bg-white border border-slate-300 rounded-lg text-2xl text-slate-900 font-bold placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all text-center"
               />
+
+              {/* Editable exchange rate (minimal change) */}
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  step="1"
+                  min="1"
+                  value={exchangeRate}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (!isNaN(v) && v > 0) setExchangeRate(v);
+                  }}
+                  className="flex-1 px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm text-slate-900 placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200"
+                />
+                <div className="text-xs text-slate-600">UZS / $</div>
+              </div>
+              <div className="text-xs text-slate-500">Курс сохраняется автоматически и применяется ко всем суммам.</div>
+
               <div className="grid grid-cols-2 gap-2">
                 <button 
                   onClick={() => setSelectedCurrency('USD')} 
@@ -1713,15 +1963,7 @@ const ElectroMaxPro = () => {
         </div>
       )}
 
-      <style>{`
-        mark {
-          background-color: #fbbf24;
-          color: #78350f;
-          font-weight: bold;
-          border-radius: 3px;
-          padding: 0 2px;
-        }
-      `}</style>
+     
     </div>
   );
 };
