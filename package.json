@@ -12,8 +12,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@dataconnect/generated": "file:src/dataconnect-generated",
     "axios": "^1.12.2",
     "concurrently": "^9.2.1",
+    "firebase": "^12.8.0",
     "fs-extra": "^11.3.2",
     "json-server": "^1.0.0-beta.3",
     "lucide-react": "^0.562.0",

@@ -803,7 +803,94 @@ const printReceipt = (order, exchangeRate = 12500) => {
     { id: 'analytics', label: 'Аналитика', icon: BarChart3 },
     { id: 'debts', label: 'Долги', icon: DollarSign, badge: debts.filter(d => !d.paid).length },
   ];
+  // ---------------- Backup / Restore (вставить ВНУТРИ компонента, ПЕРЕД formatUZS) ----------------
+const downloadJsonFile = (obj, filename) => {
+  const json = JSON.stringify(obj, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+};
 
+const exportFullBackupFile = () => {
+  try {
+    const productsLocal = (() => { try { return JSON.parse(localStorage.getItem('products') || '[]'); } catch { return []; } })();
+    const ordersLocal   = (() => { try { return JSON.parse(localStorage.getItem('electromax_orders') || '[]'); } catch { return []; } })();
+    const debtsLocal    = (() => { try { return JSON.parse(localStorage.getItem('electromax_debts') || '[]'); } catch { return []; } })();
+    const cartLocal     = (() => { try { return JSON.parse(localStorage.getItem('electromax_cart') || '[]'); } catch { return []; } })();
+    const rateLocal     = (() => { try { return JSON.parse(localStorage.getItem('electromax_rate') || 'null'); } catch { return null; } })();
+
+    const payload = {
+      meta: { app: 'electromax', ts: new Date().toISOString() },
+      products: productsLocal,
+      orders: ordersLocal,
+      debts: debtsLocal,
+      cart: cartLocal,
+      rate: rateLocal
+    };
+
+    const filename = `electromax_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`;
+    downloadJsonFile(payload, filename);
+    alert('Бэкап скачан — сохраните файл в надёжном месте.');
+  } catch (e) {
+    console.error('exportFullBackupFile error', e);
+    alert('Ошибка при создании бэкапа — см. консоль.');
+  }
+};
+
+const restoreFromBackupFile = async (file) => {
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    if (!parsed || !parsed.meta) { alert('Файл не похож на корректный backup.'); return; }
+    if (!confirm('Восстановить данные из бэкапа? Текущие локальные данные будут перезаписаны. Продолжить?')) return;
+
+    // Запись в localStorage (ключи, которые ваше приложение использует)
+    if (Array.isArray(parsed.orders)) localStorage.setItem('electromax_orders', JSON.stringify(parsed.orders));
+    if (Array.isArray(parsed.debts))  localStorage.setItem('electromax_debts', JSON.stringify(parsed.debts));
+    if (Array.isArray(parsed.cart))   localStorage.setItem('electromax_cart', JSON.stringify(parsed.cart));
+    if (parsed.rate !== undefined && parsed.rate !== null) localStorage.setItem('electromax_rate', JSON.stringify(parsed.rate));
+    if (Array.isArray(parsed.products) && parsed.products.length) {
+      try { localStorage.setItem('products', JSON.stringify(parsed.products)); } catch (e) { /* ignore */ }
+    }
+
+    // Обновляем state (если функции set* доступны)
+    try {
+      if (Array.isArray(parsed.orders) && typeof setOrders === 'function') {
+        setOrders(parsed.orders.map(o => ({
+          ...o,
+          items: Array.isArray(o.items) ? o.items.map(it => ({ ...it, quantity: Number(it.quantity)||0, price: Number(it.price)||0 })) : [],
+          total: Number(o.total) || 0,
+          dateFormatted: o.dateFormatted || (o.date ? new Date(o.date).toLocaleString('ru-RU') : new Date().toLocaleString('ru-RU'))
+        })));
+      }
+      if (Array.isArray(parsed.debts) && typeof setDebts === 'function') setDebts(parsed.debts.map(d => ({ ...d, amount: Number(d.amount)||0 })));
+      if (Array.isArray(parsed.cart) && typeof setCart === 'function') setCart(parsed.cart.map(it => ({ ...it, quantity: Number(it.quantity)||0, price: Number(it.price)||0 })));
+      if (parsed.rate !== undefined && parsed.rate !== null && typeof setExchangeRate === 'function') setExchangeRate(Number(parsed.rate));
+      if (Array.isArray(parsed.products) && typeof setProducts === 'function') setProducts(parsed.products);
+    } catch (e) { console.warn('restore: setState failed (still saved to localStorage)', e); }
+
+    alert('Восстановление выполнено. Рекомендуется перезагрузить страницу.');
+    window.location.reload();
+  } catch (e) {
+    console.error('restoreFromBackupFile error', e);
+    alert('Ошибка при восстановлении — см. консоль.');
+  }
+};
+
+const handleBackupFileInput = (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  restoreFromBackupFile(file);
+  e.target.value = '';
+};
+// ---------------- end Backup /Restore ----------------
   // helper to format UZS shown succinctly
   const formatUZS = (usd) => Math.round((Number(usd) || 0) * (Number(exchangeRate) || 1)).toLocaleString('ru-RU');
 
@@ -891,10 +978,28 @@ const printReceipt = (order, exchangeRate = 12500) => {
 
             <img className='w-[160px] h-[40px] rounded-lg mr-[0px]' src="/logo.jpg" alt="logo" />
 
-            <div className="flex items-center gap-2 bg-gradient-to-r from-emerald-50 to-cyan-50 px-3 py-2 rounded-lg text-xs text-emerald-700 font-medium border border-emerald-200">
-              <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse" />
-              <span>ОНЛАЙН</span>
-            </div>
+            {/* Замените существующий блок ONLINE на этот блок (рядом с логотипом) */}
+<div className="flex items-center gap-2">
+  <div className="flex items-center gap-2 bg-gradient-to-r from-emerald-50 to-cyan-50 px-3 py-2 rounded-lg text-xs text-emerald-700 font-medium border border-emerald-200">
+    <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse" />
+    <span>ОНЛАЙН</span>
+  </div>
+
+  <div className="ml-3 flex items-center gap-2">
+    <button
+      onClick={exportFullBackupFile}
+      title="Скачать резерв всех данных"
+      className="flex items-center gap-2 px-3 py-1 rounded-md bg-white border border-slate-200 shadow-sm hover:shadow-md text-xs text-slate-800"
+    >
+      <Download size={14} /> Бэкап
+    </button>
+
+    <label className="flex items-center gap-2 px-3 py-1 rounded-md bg-white border border-slate-200 shadow-sm hover:shadow-md text-xs text-slate-800 cursor-pointer">
+      <input type="file" accept=".json,application/json" onChange={handleBackupFileInput} style={{ display: 'none' }} />
+      Восстановить
+    </label>
+  </div>
+</div>
           </div>
         </header>
 
