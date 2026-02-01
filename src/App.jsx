@@ -1007,7 +1007,7 @@ const handleBackupFileInput = (e) => {
         <main className="flex-1 overflow-hidden p-4 bg-gradient-to-br from-slate-50 via-white to-slate-50">
           {/* ORDER VIEW */}
           {currentView === 'order' && (
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 h-full">
+            <div className="grid grid-cols-1 lg:grid-cols-6 gap-4 h-full">
               {/* Products Catalog */}
               <div className="lg:col-span-4 flex flex-col h-full min-h-0">
                 <div className="bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col h-full shadow-sm hover:shadow-md transition-shadow">
@@ -1207,7 +1207,7 @@ const handleBackupFileInput = (e) => {
               </div>
 
               {/* CART SIDEBAR */}
-              <div className="lg:col-span-1 h-full min-h-0">
+              <div className="lg:col-span-2 h-full min-h-0">
                 <div className="bg-white border border-slate-200 rounded-xl overflow-visible flex flex-col h-full shadow-sm hover:shadow-md transition-shadow">
                   <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between bg-gradient-to-r from-slate-50 to-white">
                     <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
